@@ -42,6 +42,8 @@ _PATTERNS: list[Tuple[re.Pattern, str]] = [
     (re.compile(r"play\s+(.+?)\s+(?:on\s+)?(?:youtube|you tube)", re.I), "play_youtube"),
     (re.compile(r"(?:open\s+)?youtube\s+(?:and\s+)?(?:play|search(?:\s+for)?)\s+(.+)", re.I), "play_youtube"),
     (re.compile(r"(?:search|find|look up)\s+(?:for\s+)?(.+?)\s+on\s+(?:youtube|you tube)", re.I), "play_youtube"),
+    # Catch-all: "youtube <query>" — any phrase starting with youtube is treated as play
+    (re.compile(r"^(?:youtube|you tube)\s+(.+)$", re.I), "play_youtube"),
     (re.compile(r"(?:open|go to|launch)\s+(?:youtube|you tube)$", re.I), "open_youtube"),
     (re.compile(r"(?:open|go to|launch|navigate to)\s+(.+)", re.I), "open_website"),
     (re.compile(r"volume\s+up", re.I), "volume_up"),
