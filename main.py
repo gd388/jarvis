@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""
-Jarvis AI Assistant - Main Entry Point
+"""Jarvis AI Assistant — Main Entry Point"""
 
-A production-level voice assistant that:
-- Listens for wake word ("Rise")
-- Processes user commands via Groq LLM
-- Responds with natural language via text-to-speech
+# ── Suppress ALSA / Jack noise before any audio lib loads ──────────────────── #
+import os
+import ctypes
 
-Usage:
-    python main.py
+def _suppress_alsa_errors() -> None:
+    """Redirect ALSA/Jack C-level stderr so noise never reaches the terminal."""
+    try:
+        asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+        asound.snd_lib_error_set_handler(None)   # silence ALSA C errors
+    except Exception:
+        pass
+    # Also suppress via env var
+    os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
-Requirements:
-    - python-dotenv (for environment variables)
-    - SpeechRecognition (for voice input)
-    - pyttsx3 (for voice output)
-    - langchain-groq (for LLM integration)
-"""
+_suppress_alsa_errors()
+# ─────────────────────────────────────────────────────────────────────────────  #
 
 import sys
-import logging
 from agent.assistant import JarvisAssistant
 from config.settings import settings
 from utils import setup_logger
@@ -27,16 +27,11 @@ logger = setup_logger(__name__)
 
 
 def main():
-    """Main entry point"""
     try:
-        # Validate settings
         settings.validate()
         logger.info("✓ Settings validated")
-        
-        # Initialize and run assistant
         jarvis = JarvisAssistant()
         jarvis.run()
-        
     except ValueError as e:
         logger.error(f"❌ Configuration Error: {e}")
         logger.error("Please ensure GROQ_API_KEY is set in .env file")
