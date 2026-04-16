@@ -18,27 +18,34 @@ logger = setup_logger(__name__)
 
 
 def _quiet_mic():
-    """Open sr.Microphone() with Jack/PortAudio stderr noise silenced.
+    """Open sr.Microphone() with Jack/PortAudio noise silenced.
 
-    Returns the entered context-manager (an open Microphone).  The caller
-    must call mic.__exit__(None, None, None) when done.
+    Redirects both fd 1 (stdout) and fd 2 (stderr) to /dev/null during the
+    PortAudio device probe, then restores them.  Jack's libjack writes noise
+    from background threads, so we hold the redirect for 0.5 s after open.
     """
     mic = sr.Microphone()
+    sys.stdout.flush()
     sys.stderr.flush()
-    saved_fd = os.dup(2)
+    saved_1 = os.dup(1)
+    saved_2 = os.dup(2)
     devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
     os.dup2(devnull, 2)
     os.close(devnull)
     try:
         mic.__enter__()
+        time.sleep(0.5)          # let Jack background threads finish
     except Exception:
-        # Restore stderr before re-raising
-        os.dup2(saved_fd, 2)
-        os.close(saved_fd)
+        os.dup2(saved_1, 1)
+        os.dup2(saved_2, 2)
+        os.close(saved_1)
+        os.close(saved_2)
         raise
-    # Restore stderr now that the noisy PortAudio probe is done
-    os.dup2(saved_fd, 2)
-    os.close(saved_fd)
+    os.dup2(saved_1, 1)
+    os.dup2(saved_2, 2)
+    os.close(saved_1)
+    os.close(saved_2)
     return mic
 
 
