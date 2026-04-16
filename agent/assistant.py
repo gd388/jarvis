@@ -1,7 +1,6 @@
 """Main assistant logic — state machine orchestrating voice I/O and the LLM."""
 
 import logging
-import time
 
 from voice.listener import VoiceListener
 from voice.speaker import VoiceSpeaker
@@ -36,8 +35,8 @@ class JarvisAssistant:
         logger.info("🚀  Initialising Jarvis AI Assistant")
         logger.info("=" * 60)
 
-        self.listener = VoiceListener()
         self.speaker = VoiceSpeaker()
+        self.listener = VoiceListener(speaker=self.speaker)
         self.llm = GroqClient()
 
         logger.info("✓  All systems online — Jarvis ready")
@@ -135,8 +134,6 @@ class JarvisAssistant:
             response = self._safe_respond(command)
             self.speaker.speak(response)
 
-            # Small gap so the mic isn't triggered by the tail of playback
-            time.sleep(0.3)
 
     # ------------------------------------------------------------------ #
     #  Main loop                                                           #

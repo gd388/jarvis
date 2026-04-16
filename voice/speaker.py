@@ -3,6 +3,7 @@
 import logging
 import os
 import tempfile
+import threading
 from typing import Optional
 
 from config.settings import settings
@@ -25,6 +26,8 @@ class VoiceSpeaker:
         self._pygame = None
         self._gtts_cls = None
         self._engine = None
+        # Set while Jarvis is speaking — listener checks this to avoid self-pickup
+        self._speaking = threading.Event()
 
         self._init_gtts()
         if not self._gtts_ok:
@@ -73,6 +76,11 @@ class VoiceSpeaker:
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
 
+    @property
+    def is_speaking(self) -> bool:
+        """True while TTS audio is playing (including echo-cooldown after)."""
+        return self._speaking.is_set()
+
     def speak(self, text: str) -> None:
         """Convert *text* to speech and block until playback completes."""
         if not text or not text.strip():
@@ -84,12 +92,20 @@ class VoiceSpeaker:
         print(f"{'─'*60}\n")
         logger.info(f"🔊 Speaking: {text[:80]}{'…' if len(text) > 80 else ''}")
 
-        if self._gtts_ok:
-            self._speak_gtts(text)
-        elif self._pyttsx3_ok:
-            self._speak_pyttsx3(text)
-        else:
-            logger.error("❌ No TTS backend — cannot speak")
+        self._speaking.set()
+        try:
+            if self._gtts_ok:
+                self._speak_gtts(text)
+            elif self._pyttsx3_ok:
+                self._speak_pyttsx3(text)
+            else:
+                logger.error("❌ No TTS backend — cannot speak")
+        finally:
+            # Keep the lock held for an extra second so the mic doesn't
+            # pick up the last echoes of Jarvis's own voice.
+            import time
+            time.sleep(1.2)
+            self._speaking.clear()
 
     # ------------------------------------------------------------------ #
     #  Backends                                                            #

@@ -1,12 +1,15 @@
 """Voice listener — speech-to-text via microphone using SpeechRecognition."""
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import speech_recognition as sr
 
 from config.settings import settings
 from utils import setup_logger
+
+if TYPE_CHECKING:
+    from voice.speaker import VoiceSpeaker
 
 logger = setup_logger(__name__)
 
@@ -15,11 +18,12 @@ class VoiceListener:
     """
     Captures microphone audio and converts it to text.
 
-    - listen_for_wake_word(): blocks until the wake word is detected.
-    - listen_command(): listens once for a user command (with retries).
+    Pass *speaker* so the listener can suppress mic captures that happen
+    while Jarvis is speaking (avoids self-pickup echo).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, speaker: Optional["VoiceSpeaker"] = None) -> None:
+        self._speaker = speaker
         self.recognizer = sr.Recognizer()
 
         # Tune recognizer
@@ -46,8 +50,12 @@ class VoiceListener:
         """
         Record one phrase from the microphone and return its text.
 
-        Returns None on silence, noise, or API errors — never raises.
+        Returns None on silence, noise, self-speech, or API errors — never raises.
         """
+        # Don't listen while Jarvis is speaking — we'd just pick up its own voice
+        if self._speaker and self._speaker.is_speaking:
+            return None
+
         try:
             with sr.Microphone() as source:
                 logger.debug("🎤 Listening…")
