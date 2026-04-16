@@ -1,12 +1,36 @@
 """
-Logging configuration for Jarvis Assistant.
-Provides structured logging with file and console output.
+Logging configuration and shared utilities for Jarvis Assistant.
 """
 
+import contextlib
 import logging
 import os
 from datetime import datetime
 from config.settings import settings
+
+
+@contextlib.contextmanager
+def suppress_c_stderr():
+    """
+    Redirect C-level file-descriptor 2 (stderr) to /dev/null for the duration
+    of the block.  This silences low-level library noise (ALSA dlmisc, Jack)
+    that bypasses Python's logging and the ALSA error-handler.
+
+    Python's own stderr (sys.stderr) is unaffected because it is flushed and
+    then restored via dup2.
+    """
+    import sys
+    sys.stderr.flush()
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    old_fd = os.dup(2)
+    os.dup2(devnull_fd, 2)
+    os.close(devnull_fd)
+    try:
+        yield
+    finally:
+        sys.stderr.flush()
+        os.dup2(old_fd, 2)
+        os.close(old_fd)
 
 
 def setup_logger(name: str) -> logging.Logger:

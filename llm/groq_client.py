@@ -9,15 +9,18 @@ from utils import setup_logger
 logger = setup_logger(__name__)
 
 _SYSTEM_PROMPT = """\
-You are Jarvis, an advanced AI assistant modelled after the iconic J.A.R.V.I.S. from Iron Man.
-You are highly intelligent, composed, and subtly witty. You address the user as "sir".
+You are Jarvis, an advanced AI voice assistant modelled after J.A.R.V.I.S. from Iron Man.
+You are highly intelligent, composed, and subtly witty. Address the user as "sir".
 
-RULES — follow these strictly:
-- NEVER ask follow-up questions. Always give a direct, complete answer immediately.
-- NEVER say "Would you like..." or "Do you want..." or "Shall I..." — just answer.
-- Keep answers to 1-2 short sentences. Be direct and decisive.
-- Speak naturally for text-to-speech — no bullet points, markdown, or special characters.
-- If you don't know something, say so in one sentence.
+CRITICAL RULES — you MUST follow every single one:
+1. NEVER ask a question. NEVER. Not even to clarify. Just answer with your best guess.
+2. NEVER say "Would you like", "Do you want", "Shall I", "Could you", "Can you specify",
+   "Which one", "What kind", "Did you mean" — these are ALL FORBIDDEN.
+3. Give exactly ONE short answer in 1-2 sentences. Be decisive.
+4. If the request is unclear, pick the most likely interpretation and go with it.
+5. Speak naturally for text-to-speech — no bullets, markdown, asterisks, or special characters.
+6. If someone says something you don't understand, say "I'm not sure about that, sir" and STOP.
+7. NEVER list options or suggestions. Just give one direct answer.
 """
 
 
@@ -32,8 +35,8 @@ class GroqClient:
         self.llm = ChatGroq(
             model=self.model,
             api_key=settings.GROQ_API_KEY,
-            temperature=0.7,
-            max_tokens=512,   # concise for voice
+            temperature=0.4,
+            max_tokens=256,   # concise for voice
         )
         logger.info(f"✓ Groq LLM ready  [model: {self.model}]")
 
@@ -43,7 +46,7 @@ class GroqClient:
         Raises on API failure so the caller can handle it.
         """
         if not query or not query.strip():
-            return "I didn't catch that. Could you please repeat your question?"
+            return "I didn't catch that, sir."
 
         logger.info(f"📤 → Groq: '{query[:120]}'")
 

@@ -1,6 +1,9 @@
 """Voice listener — speech-to-text via microphone using SpeechRecognition."""
 
 import logging
+import os
+import sys
+import time
 from typing import Optional, TYPE_CHECKING
 
 import speech_recognition as sr
@@ -12,6 +15,31 @@ if TYPE_CHECKING:
     from voice.speaker import VoiceSpeaker
 
 logger = setup_logger(__name__)
+
+
+def _quiet_mic():
+    """Open sr.Microphone() with Jack/PortAudio stderr noise silenced.
+
+    Returns the entered context-manager (an open Microphone).  The caller
+    must call mic.__exit__(None, None, None) when done.
+    """
+    mic = sr.Microphone()
+    sys.stderr.flush()
+    saved_fd = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        mic.__enter__()
+    except Exception:
+        # Restore stderr before re-raising
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+        raise
+    # Restore stderr now that the noisy PortAudio probe is done
+    os.dup2(saved_fd, 2)
+    os.close(saved_fd)
+    return mic
 
 
 class VoiceListener:
@@ -26,14 +54,34 @@ class VoiceListener:
         self._speaker = speaker
         self.recognizer = sr.Recognizer()
 
-        # Tune recognizer
+        # Tune recognizer — favour capturing full sentences
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.8       # secs of silence = end of phrase
-        self.recognizer.non_speaking_duration = 0.5
+        self.recognizer.dynamic_energy_adjustment_damping = 0.15
+        self.recognizer.dynamic_energy_ratio = 1.5
+        self.recognizer.pause_threshold = 1.5       # wait longer for pauses between words
+        self.recognizer.non_speaking_duration = 0.6
+        self.recognizer.phrase_threshold = 0.3       # min length to count as speech
+        self.recognizer.operation_timeout = None      # no socket timeout
 
         logger.info("🎙️  Calibrating microphone for ambient noise…")
-        with sr.Microphone() as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=1.5)
+        for attempt in range(3):
+            try:
+                mic = _quiet_mic()
+                try:
+                    self.recognizer.adjust_for_ambient_noise(mic, duration=2.0)
+                finally:
+                    mic.__exit__(None, None, None)
+                break
+            except Exception as exc:
+                logger.warning(f"⚠️  Mic open attempt {attempt+1}/3 failed: {exc}")
+                time.sleep(1.0)
+        else:
+            raise RuntimeError("Could not open microphone after 3 attempts")
+
+        # Lower the threshold so soft speech isn't rejected
+        self.recognizer.energy_threshold = max(
+            50, self.recognizer.energy_threshold * 0.65
+        )
         logger.info(
             f"✓ Microphone ready  (energy threshold: {self.recognizer.energy_threshold:.0f})"
         )
@@ -55,17 +103,25 @@ class VoiceListener:
         # Don't listen while Jarvis is speaking — we'd just pick up its own voice
         if self._speaker and self._speaker.is_speaking:
             return None
+        # Extra guard: wait a moment after speaking stops so echoes die out
+        if self._speaker:
+            time.sleep(0.3)
 
         try:
-            with sr.Microphone() as source:
+            mic = _quiet_mic()
+            try:
                 logger.debug("🎤 Listening…")
                 audio = self.recognizer.listen(
-                    source,
+                    mic,
                     timeout=listen_timeout,
                     phrase_time_limit=phrase_time_limit,
                 )
+            finally:
+                mic.__exit__(None, None, None)
 
-            text = self.recognizer.recognize_google(audio).strip().lower()
+            text = self.recognizer.recognize_google(
+                audio, language="en-IN"
+            ).strip().lower()
             logger.info(f"🗣️  Heard: '{text}'")
             return text
 

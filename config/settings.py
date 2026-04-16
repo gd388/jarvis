@@ -19,9 +19,9 @@ class Settings:
     WAKE_WORD: str = os.getenv("WAKE_WORD", "Rise").lower()
 
     # Listener
-    LISTEN_TIMEOUT: int = int(os.getenv("LISTEN_TIMEOUT", "5"))    # secs to wait for speech
-    COMMAND_TIMEOUT: int = int(os.getenv("COMMAND_TIMEOUT", "8"))   # secs for a full command
-    PHRASE_LIMIT: int = int(os.getenv("PHRASE_LIMIT", "10"))        # max phrase length secs
+    LISTEN_TIMEOUT: int = int(os.getenv("LISTEN_TIMEOUT", "7"))    # secs to wait for speech
+    COMMAND_TIMEOUT: int = int(os.getenv("COMMAND_TIMEOUT", "10"))  # secs for a full command
+    PHRASE_LIMIT: int = int(os.getenv("PHRASE_LIMIT", "15"))        # max phrase length secs
     COMMAND_RETRIES: int = int(os.getenv("COMMAND_RETRIES", "3"))   # retries before standby
 
     # Speaker

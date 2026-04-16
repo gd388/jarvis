@@ -5,14 +5,28 @@
 import os
 import ctypes
 
+# CFUNCTYPE signature for snd_lib_error_handler_t
+_ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
+    None,
+    ctypes.c_char_p, ctypes.c_int,
+    ctypes.c_char_p, ctypes.c_int,
+    ctypes.c_char_p,
+)
+# Must stay alive at module level — if GC'd, ALSA calls a freed pointer → segfault
+_noop_handler = _ERROR_HANDLER_FUNC(lambda *args: None)
+
 def _suppress_alsa_errors() -> None:
-    """Redirect ALSA/Jack C-level stderr so noise never reaches the terminal."""
+    """Silence ALSA C-level noise via a no-op error handler.
+
+    Only suppresses messages routed through ALSA's error handler (pcm.c,
+    pcm_dmix.c, dlmisc.c).  Jack messages go to stderr directly — those
+    are harmless and can be filtered with `2>/dev/null` if desired.
+    """
     try:
         asound = ctypes.cdll.LoadLibrary("libasound.so.2")
-        asound.snd_lib_error_set_handler(None)   # silence ALSA C errors
+        asound.snd_lib_error_set_handler(_noop_handler)
     except Exception:
         pass
-    # Also suppress via env var
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
 _suppress_alsa_errors()

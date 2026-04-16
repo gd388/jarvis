@@ -39,11 +39,15 @@ def _youtube_get_first_video_url(query: str) -> Optional[str]:
 
 
 _PATTERNS: list[Tuple[re.Pattern, str]] = [
+    # YouTube explicit
     (re.compile(r"play\s+(.+?)\s+(?:on\s+)?(?:youtube|you tube)", re.I), "play_youtube"),
     (re.compile(r"(?:open\s+)?youtube\s+(?:and\s+)?(?:play|search(?:\s+for)?)\s+(.+)", re.I), "play_youtube"),
     (re.compile(r"(?:search|find|look up)\s+(?:for\s+)?(.+?)\s+on\s+(?:youtube|you tube)", re.I), "play_youtube"),
-    # Catch-all: "youtube <query>" — any phrase starting with youtube is treated as play
+    # Catch-all: "youtube <query>"
     (re.compile(r"^(?:youtube|you tube)\s+(.+)$", re.I), "play_youtube"),
+    # Generic "play <something>" — treat as YouTube play
+    (re.compile(r"^play\s+(.+)", re.I), "play_youtube"),
+    # Open YouTube without a query
     (re.compile(r"(?:open|go to|launch)\s+(?:youtube|you tube)$", re.I), "open_youtube"),
     (re.compile(r"(?:open|go to|launch|navigate to)\s+(.+)", re.I), "open_website"),
     (re.compile(r"volume\s+up", re.I), "volume_up"),

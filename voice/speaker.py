@@ -101,10 +101,9 @@ class VoiceSpeaker:
             else:
                 logger.error("❌ No TTS backend — cannot speak")
         finally:
-            # Keep the lock held for an extra second so the mic doesn't
-            # pick up the last echoes of Jarvis's own voice.
+            # Keep the lock held so the mic doesn't pick up echoes.
             import time
-            time.sleep(1.2)
+            time.sleep(2.0)
             self._speaking.clear()
 
     # ------------------------------------------------------------------ #
