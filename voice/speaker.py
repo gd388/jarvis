@@ -1,124 +1,133 @@
-"""Voice speaker module for text-to-speech conversion"""
+"""Voice speaker — text-to-speech using gTTS + pygame (primary) or pyttsx3 (fallback)."""
 
 import logging
+import os
+import tempfile
+from typing import Optional
+
 from config.settings import settings
 from utils import setup_logger
 
 logger = setup_logger(__name__)
 
-# Lazy import of pyttsx3 to handle missing audio system
-try:
-    import pyttsx3
-    PYTTSX3_AVAILABLE = True
-except Exception as e:
-    PYTTSX3_AVAILABLE = False
-    logger.warning(f"⚠️ pyttsx3 not available: {e}")
-
 
 class VoiceSpeaker:
     """
-    Handles text-to-speech conversion and audio output.
-    Uses pyttsx3 for offline text-to-speech.
+    Converts text to speech and plays it through the system speakers.
+
+    Primary backend  : gTTS (Google TTS) + pygame  — natural, high-quality voice.
+    Fallback backend : pyttsx3 (espeak-ng)          — offline, lower quality.
     """
-    
-    def __init__(self, rate: int = None, volume: float = None, 
-                 voice_id: int = 0):
-        """
-        Initialize the voice speaker.
-        
-        Args:
-            rate: Speech rate (words per minute, default: settings.VOICE_RATE)
-            volume: Volume level 0.0-1.0 (default: settings.VOICE_VOLUME)
-            voice_id: Voice ID (0=default, 1=alternative if available)
-        """
-        if not PYTTSX3_AVAILABLE:
-            raise Exception("pyttsx3 not available - audio system not configured")
-        
-        self.engine = pyttsx3.init()
-        self.rate = rate or settings.VOICE_RATE
-        self.volume = volume or settings.VOICE_VOLUME
-        
-        # Configure engine
-        self.engine.setProperty('rate', self.rate)
-        self.engine.setProperty('volume', self.volume)
-        
-        # Set voice if available
-        voices = self.engine.getProperty('voices')
-        if voice_id < len(voices):
-            self.engine.setProperty('voice', voices[voice_id].id)
-            logger.info(f"Voice set to: {voices[voice_id].name}")
-        
-        logger.info(f"Speaker initialized - Rate: {self.rate}, Volume: {self.volume}")
-    
-    def speak(self, text: str, is_response: bool = False) -> bool:
-        """
-        Convert text to speech and play it.
-        
-        Args:
-            text: Text to speak
-            is_response: If True, marks this as LLM response (for logging)
-            
-        Returns:
-            True if successful, False otherwise
-        """
+
+    def __init__(self) -> None:
+        self._gtts_ok = False
+        self._pyttsx3_ok = False
+        self._pygame = None
+        self._gtts_cls = None
+        self._engine = None
+
+        self._init_gtts()
+        if not self._gtts_ok:
+            self._init_pyttsx3()
+
+    # ------------------------------------------------------------------ #
+    #  Initialisation                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _init_gtts(self) -> None:
+        try:
+            import pygame
+            from gtts import gTTS  # noqa: F401 — import to validate availability
+
+            pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=2048)
+            pygame.mixer.init()
+
+            self._pygame = pygame
+            from gtts import gTTS
+            self._gtts_cls = gTTS
+            self._gtts_ok = True
+            logger.info("✓ Speaker ready  [gTTS + pygame]")
+        except Exception as exc:
+            logger.warning(f"⚠️  gTTS/pygame unavailable: {exc} — trying pyttsx3…")
+
+    def _init_pyttsx3(self) -> None:
+        try:
+            import pyttsx3
+
+            engine = pyttsx3.init()
+            engine.setProperty("rate", settings.VOICE_RATE)
+            engine.setProperty("volume", settings.VOICE_VOLUME)
+
+            # Prefer a lower-pitched voice if available (more Jarvis-like)
+            voices = engine.getProperty("voices")
+            if voices:
+                engine.setProperty("voice", voices[0].id)
+
+            self._engine = engine
+            self._pyttsx3_ok = True
+            logger.info("✓ Speaker ready  [pyttsx3]")
+        except Exception as exc:
+            logger.error(f"❌ No TTS backend available: {exc}")
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
+
+    def speak(self, text: str) -> None:
+        """Convert *text* to speech and block until playback completes."""
         if not text or not text.strip():
-            logger.warning("⚠️ Empty text provided to speaker")
-            return False
-        
-        try:
-            prefix = "🤖 Response:" if is_response else "🔊 Speaking:"
-            logger.info(f"{prefix} {text[:100]}...")
-            
-            self.engine.say(text)
-            self.engine.runAndWait()
-            
-            logger.info("✓ Speech completed")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error during speech output: {e}")
-            return False
-    
-    def speak_notification(self, notification: str) -> bool:
-        """
-        Speak a system notification or message.
-        
-        Args:
-            notification: Notification text
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            logger.info(f"📢 Notification: {notification}")
-            self.engine.say(notification)
-            self.engine.runAndWait()
-            return True
-        except Exception as e:
-            logger.error(f"❌ Error speaking notification: {e}")
-            return False
-    
-    def adjust_rate(self, rate: int) -> None:
-        """
-        Adjust speech rate.
-        
-        Args:
-            rate: New speech rate (words per minute)
-        """
-        self.rate = rate
-        self.engine.setProperty('rate', rate)
-        logger.info(f"Speech rate adjusted to: {rate}")
-    
-    def adjust_volume(self, volume: float) -> None:
-        """
-        Adjust speech volume.
-        
-        Args:
-            volume: New volume level (0.0-1.0)
-        """
-        if 0.0 <= volume <= 1.0:
-            self.volume = volume
-            self.engine.setProperty('volume', volume)
-            logger.info(f"Volume adjusted to: {volume}")
+            return
+
+        # Always echo to console so the user can read the response
+        print(f"\n{'─'*60}")
+        print(f"🤖  JARVIS: {text}")
+        print(f"{'─'*60}\n")
+        logger.info(f"🔊 Speaking: {text[:80]}{'…' if len(text) > 80 else ''}")
+
+        if self._gtts_ok:
+            self._speak_gtts(text)
+        elif self._pyttsx3_ok:
+            self._speak_pyttsx3(text)
         else:
-            logger.warning(f"⚠️ Invalid volume: {volume}. Must be 0.0-1.0")
+            logger.error("❌ No TTS backend — cannot speak")
+
+    # ------------------------------------------------------------------ #
+    #  Backends                                                            #
+    # ------------------------------------------------------------------ #
+
+    def _speak_gtts(self, text: str) -> None:
+        tmp: Optional[str] = None
+        try:
+            tts = self._gtts_cls(text=text, lang="en", slow=False)
+
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fh:
+                tmp = fh.name
+            tts.save(tmp)
+
+            self._pygame.mixer.music.load(tmp)
+            self._pygame.mixer.music.play()
+
+            # Block until playback finishes
+            clock = self._pygame.time.Clock()
+            while self._pygame.mixer.music.get_busy():
+                clock.tick(10)
+
+        except Exception as exc:
+            logger.error(f"❌ gTTS playback error: {exc}")
+            # Attempt fallback
+            if self._pyttsx3_ok:
+                self._speak_pyttsx3(text)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    def _speak_pyttsx3(self, text: str) -> None:
+        try:
+            self._engine.say(text)
+            self._engine.runAndWait()
+        except Exception as exc:
+            logger.error(f"❌ pyttsx3 error: {exc}")
+

@@ -1,121 +1,120 @@
-"""Voice listener module for speech-to-text conversion"""
+"""Voice listener — speech-to-text via microphone using SpeechRecognition."""
 
 import logging
 from typing import Optional
+
+import speech_recognition as sr
+
 from config.settings import settings
 from utils import setup_logger
 
 logger = setup_logger(__name__)
 
-# Lazy import of speech_recognition to handle missing PyAudio
-try:
-    import speech_recognition as sr
-    SPEECH_RECOGNITION_AVAILABLE = True
-except Exception as e:
-    SPEECH_RECOGNITION_AVAILABLE = False
-    logger.warning(f"⚠️ speech_recognition not available: {e}")
-
 
 class VoiceListener:
     """
-    Handles speech recognition from microphone.
-    Converts speech to text with error handling.
+    Captures microphone audio and converts it to text.
+
+    - listen_for_wake_word(): blocks until the wake word is detected.
+    - listen_command(): listens once for a user command (with retries).
     """
-    
-    def __init__(self, timeout: int = None, retry_attempts: int = None):
-        """
-        Initialize the voice listener.
-        
-        Args:
-            timeout: Seconds to wait for speech (default: settings.TIMEOUT)
-            retry_attempts: Number of retry attempts (default: settings.RETRY_ATTEMPTS)
-        """
-        if not SPEECH_RECOGNITION_AVAILABLE:
-            raise Exception("speech_recognition not available - PyAudio or audio system not configured")
-        
+
+    def __init__(self) -> None:
         self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
-        self.timeout = timeout or settings.TIMEOUT
-        self.retry_attempts = retry_attempts or settings.RETRY_ATTEMPTS
-        
-        # Adjust for ambient noise once during initialization
-        logger.info("Initializing listener... calibrating microphone noise levels")
-        with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=1)
-        logger.info("Microphone calibration complete")
-    
-    def listen(self, phrase_time_limit: int = 10) -> Optional[str]:
+
+        # Tune recognizer
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.pause_threshold = 0.8       # secs of silence = end of phrase
+        self.recognizer.non_speaking_duration = 0.5
+
+        logger.info("🎙️  Calibrating microphone for ambient noise…")
+        with sr.Microphone() as source:
+            self.recognizer.adjust_for_ambient_noise(source, duration=1.5)
+        logger.info(
+            f"✓ Microphone ready  (energy threshold: {self.recognizer.energy_threshold:.0f})"
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Internal helpers                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _listen_once(
+        self,
+        listen_timeout: int = 5,
+        phrase_time_limit: int = 8,
+    ) -> Optional[str]:
         """
-        Listen to microphone and convert speech to text.
-        
-        Args:
-            phrase_time_limit: Maximum seconds to listen for speech
-            
-        Returns:
-            Recognized text or None if failed
+        Record one phrase from the microphone and return its text.
+
+        Returns None on silence, noise, or API errors — never raises.
         """
         try:
-            logger.info("🎤 Listening...")
-            with self.microphone as source:
-                audio_data = self.recognizer.listen(
+            with sr.Microphone() as source:
+                logger.debug("🎤 Listening…")
+                audio = self.recognizer.listen(
                     source,
-                    timeout=self.timeout,
-                    phrase_time_limit=phrase_time_limit
+                    timeout=listen_timeout,
+                    phrase_time_limit=phrase_time_limit,
                 )
-            
-            logger.info("Processing audio...")
-            text = self.recognizer.recognize_google(audio_data)
-            logger.info(f"✓ Recognized: '{text}'")
+
+            text = self.recognizer.recognize_google(audio).strip().lower()
+            logger.info(f"🗣️  Heard: '{text}'")
             return text
-            
-        except sr.UnknownValueError:
-            logger.warning("⚠️ Could not understand audio. Please speak clearly.")
-            return None
-        except sr.RequestError as e:
-            logger.error(f"❌ API request failed: {e}")
-            return None
+
         except sr.WaitTimeoutError:
-            logger.warning("⚠️ No speech detected. Please try again.")
+            logger.debug("⏱️  Timeout — no speech detected")
             return None
-        except Exception as e:
-            logger.error(f"❌ Unexpected error during listening: {e}")
+        except sr.UnknownValueError:
+            logger.debug("🔇 Could not understand audio")
             return None
-    
-    def listen_for_wake_word(self, wake_word: str = None) -> bool:
+        except sr.RequestError as exc:
+            logger.error(f"❌ Google Speech API error: {exc}")
+            return None
+        except Exception as exc:
+            logger.error(f"❌ Unexpected listener error: {exc}")
+            return None
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
+
+    def listen_for_wake_word(self) -> bool:
         """
-        Continuously listen for wake word.
-        
-        Args:
-            wake_word: Wake word to listen for (default: settings.WAKE_WORD)
-            
-        Returns:
-            True if wake word detected, False otherwise
+        Loop indefinitely, sampling short audio chunks, until the wake word
+        (settings.WAKE_WORD) is heard.  Returns True when detected.
         """
-        wake_word = (wake_word or settings.WAKE_WORD).lower()
-        max_attempts = self.retry_attempts
-        
-        for attempt in range(1, max_attempts + 1):
-            recognized_text = self.listen(phrase_time_limit=3)
-            
-            if recognized_text:
-                if wake_word in recognized_text.lower():
-                    logger.info(f"✓ Wake word '{wake_word}' detected!")
-                    return True
-                else:
-                    logger.debug(f"Detected text: '{recognized_text}' - not wake word")
-            
-            if attempt < max_attempts:
-                logger.info(f"Retry {attempt}/{max_attempts - 1}...")
-        
-        return False
-    
+        wake_word = settings.WAKE_WORD.lower()
+        logger.info(f"👂 Waiting for wake word: '{wake_word}' …")
+
+        while True:
+            text = self._listen_once(listen_timeout=5, phrase_time_limit=3)
+            if text and wake_word in text:
+                logger.info(f"🔔 Wake word detected in: '{text}'")
+                return True
+
     def listen_command(self) -> Optional[str]:
         """
-        Listen for user command after wake word activation.
-        
-        Args:
-            Returns:
-            Command text or None if failed
+        Listen for a command after activation.
+
+        Retries up to settings.COMMAND_RETRIES times. Returns the recognised
+        text or None if all attempts fail.
         """
-        logger.info("🎤 Listening for command...")
-        return self.listen(phrase_time_limit=15)
+        logger.info("🎤 Listening for your command…")
+
+        for attempt in range(1, settings.COMMAND_RETRIES + 1):
+            text = self._listen_once(
+                listen_timeout=settings.COMMAND_TIMEOUT,
+                phrase_time_limit=settings.PHRASE_LIMIT,
+            )
+            if text:
+                return text
+
+            if attempt < settings.COMMAND_RETRIES:
+                logger.warning(
+                    f"⚠️  Attempt {attempt}/{settings.COMMAND_RETRIES} — "
+                    "no speech detected. Please speak clearly."
+                )
+
+        logger.warning("⚠️  No command received after all attempts")
+        return None
+
