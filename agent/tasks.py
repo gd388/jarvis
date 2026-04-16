@@ -12,62 +12,53 @@ from utils import setup_logger
 logger = setup_logger(__name__)
 
 
-# ── helpers ────────────────────────────────────────────────────────────────── #
-
 def _open_url(url: str) -> None:
-    """Open a URL in the default browser (non-blocking)."""
     webbrowser.open(url)
     logger.info(f"🌐 Opened: {url}")
 
 
-def _youtube_search_url(query: str) -> str:
-    return "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
-
-
-def _youtube_play_url(query: str) -> str:
-    """Direct 'autoplaying' search — first result page opens & starts."""
-    return (
-        "https://www.youtube.com/results?search_query="
-        + urllib.parse.quote(query)
-        + "&sp=EgIQAQ%253D%253D"   # filter: sort by relevance, first video
-    )
-
-
 def _run(cmd: list[str]) -> None:
-    """Fire-and-forget a subprocess."""
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-# ── pattern matching ───────────────────────────────────────────────────────── #
+def _youtube_get_first_video_url(query: str) -> Optional[str]:
+    """Use yt-dlp to resolve the first real video watch URL for *query*."""
+    try:
+        result = subprocess.run(
+            ["yt-dlp", f"ytsearch1:{query}", "--get-id", "--no-playlist", "-q", "--no-warnings"],
+            capture_output=True, text=True, timeout=15,
+        )
+        video_id = result.stdout.strip()
+        if video_id:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            logger.info(f"🎵 Resolved video: {url}")
+            return url
+    except Exception as exc:
+        logger.warning(f"⚠️ yt-dlp search failed: {exc}")
+    return None
 
-# Each entry: (regex_pattern, handler_name)
-# Patterns are checked in order — first match wins.
+
 _PATTERNS: list[Tuple[re.Pattern, str]] = [
-    # YouTube play / search
     (re.compile(r"play\s+(.+?)\s+(?:on\s+)?(?:youtube|you tube)", re.I), "play_youtube"),
     (re.compile(r"(?:open\s+)?youtube\s+(?:and\s+)?(?:play|search(?:\s+for)?)\s+(.+)", re.I), "play_youtube"),
     (re.compile(r"(?:search|find|look up)\s+(?:for\s+)?(.+?)\s+on\s+(?:youtube|you tube)", re.I), "play_youtube"),
     (re.compile(r"(?:open|go to|launch)\s+(?:youtube|you tube)$", re.I), "open_youtube"),
-
-    # Browser / websites
     (re.compile(r"(?:open|go to|launch|navigate to)\s+(.+)", re.I), "open_website"),
-
-    # Volume
     (re.compile(r"volume\s+up", re.I), "volume_up"),
     (re.compile(r"volume\s+down", re.I), "volume_down"),
-    (re.compile(r"mute", re.I), "mute"),
-
-    # System
+    (re.compile(r"\bmute\b", re.I), "mute"),
     (re.compile(r"(?:take\s+a?\s*)?screenshot", re.I), "screenshot"),
 ]
 
 
-# ── action functions ───────────────────────────────────────────────────────── #
-
 def _do_play_youtube(query: str) -> str:
-    url = _youtube_play_url(query)
-    _open_url(url)
-    return f"Playing {query} on YouTube now, sir."
+    url = _youtube_get_first_video_url(query)
+    if url:
+        _open_url(url)
+        return f"Playing {query} on YouTube now, sir."
+    fallback = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+    _open_url(fallback)
+    return f"Opening YouTube search for {query}, sir."
 
 
 def _do_open_youtube() -> str:
@@ -77,14 +68,10 @@ def _do_open_youtube() -> str:
 
 def _do_open_website(target: str) -> str:
     target = target.strip()
-    # Add scheme if missing
     if not target.startswith(("http://", "https://")):
-        # Check if it looks like a domain (contains a dot)
-        if "." in target:
-            url = "https://" + target
-        else:
-            # Treat as Google search
-            url = "https://www.google.com/search?q=" + urllib.parse.quote(target)
+        url = "https://" + target if "." in target else (
+            "https://www.google.com/search?q=" + urllib.parse.quote(target)
+        )
     else:
         url = target
     _open_url(url)
@@ -111,18 +98,11 @@ def _do_screenshot() -> str:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.expanduser(f"~/Desktop/screenshot_{ts}.png")
     _run(["gnome-screenshot", "-f", path])
-    return f"Screenshot saved to your desktop, sir."
+    return "Screenshot saved to your desktop, sir."
 
-
-# ── public API ─────────────────────────────────────────────────────────────── #
 
 def try_execute(command: str) -> Optional[str]:
-    """
-    Try to match *command* against known task patterns.
-
-    Returns a spoken reply string if a task was executed,
-    or None if no pattern matched (caller should use LLM instead).
-    """
+    """Match command against task patterns. Returns reply or None for LLM."""
     for pattern, handler in _PATTERNS:
         m = pattern.search(command)
         if m:
@@ -144,6 +124,5 @@ def try_execute(command: str) -> Optional[str]:
                     return _do_screenshot()
             except Exception as exc:
                 logger.error(f"❌ Task '{handler}' failed: {exc}")
-                return f"I'm sorry, I couldn't complete that task. {exc}"
-
-    return None  # no match → let LLM handle it
+                return "I'm sorry, I couldn't complete that task."
+    return None
