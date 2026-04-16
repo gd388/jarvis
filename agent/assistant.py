@@ -5,6 +5,7 @@ import logging
 from voice.listener import VoiceListener
 from voice.speaker import VoiceSpeaker
 from llm.groq_client import GroqClient
+from agent.tasks import try_execute
 from config.settings import settings
 from utils import setup_logger
 
@@ -105,7 +106,7 @@ class JarvisAssistant:
                 if consecutive_failures >= 2:
                     self.speaker.speak(
                         "I haven't heard anything for a while. "
-                        "Returning to standby. Say 'Rise' when you need me."
+                        f"Returning to standby. Say '{settings.WAKE_WORD}' when you need me."
                     )
                     return True  # back to standby
                 self.speaker.speak(
@@ -130,8 +131,10 @@ class JarvisAssistant:
                 )
                 return True  # back to standby
 
-            # ── Process with LLM ─────────────────────────────────────── #
-            response = self._safe_respond(command)
+            # ── Try a local task first, fall back to LLM ─────────────── #
+            response = try_execute(command)
+            if response is None:
+                response = self._safe_respond(command)
             self.speaker.speak(response)
 
 
