@@ -1,8 +1,5 @@
 """Voice listener — speech-to-text via microphone using SpeechRecognition."""
 
-import logging
-import os
-import sys
 import time
 from typing import Optional, TYPE_CHECKING
 
@@ -17,175 +14,199 @@ if TYPE_CHECKING:
 logger = setup_logger(__name__)
 
 
-def _quiet_mic():
-    """Open sr.Microphone() with Jack/PortAudio noise silenced.
-
-    Redirects both fd 1 (stdout) and fd 2 (stderr) to /dev/null during the
-    PortAudio device probe, then restores them.  Jack's libjack writes noise
-    from background threads, so we hold the redirect for 0.5 s after open.
-    """
-    mic = sr.Microphone()
-    sys.stdout.flush()
-    sys.stderr.flush()
-    saved_1 = os.dup(1)
-    saved_2 = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, 1)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    try:
-        mic.__enter__()
-        time.sleep(0.5)          # let Jack background threads finish
-    except Exception:
-        os.dup2(saved_1, 1)
-        os.dup2(saved_2, 2)
-        os.close(saved_1)
-        os.close(saved_2)
-        raise
-    os.dup2(saved_1, 1)
-    os.dup2(saved_2, 2)
-    os.close(saved_1)
-    os.close(saved_2)
-    return mic
-
-
 class VoiceListener:
-    """
-    Captures microphone audio and converts it to text.
-
-    Pass *speaker* so the listener can suppress mic captures that happen
-    while Jarvis is speaking (avoids self-pickup echo).
-    """
+    """Captures microphone audio and converts it to text."""
 
     def __init__(self, speaker: Optional["VoiceSpeaker"] = None) -> None:
         self._speaker = speaker
         self.recognizer = sr.Recognizer()
 
-        # Tune recognizer — favour capturing full sentences
-        self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.dynamic_energy_adjustment_damping = 0.15
-        self.recognizer.dynamic_energy_ratio = 1.5
-        self.recognizer.pause_threshold = 1.5       # wait longer for pauses between words
-        self.recognizer.non_speaking_duration = 0.6
-        self.recognizer.phrase_threshold = 0.3       # min length to count as speech
-        self.recognizer.operation_timeout = None      # no socket timeout
+        # Fixed low threshold — ambient RMS ≈ 14, speech RMS ≈ 3000-6000.
+        # Dynamic mode raises threshold after TTS playback → Jarvis goes deaf.
+        self.recognizer.dynamic_energy_threshold = False
+        self.recognizer.energy_threshold = 15
+        self.recognizer.pause_threshold = 0.7
+        self.recognizer.non_speaking_duration = 0.4
+        self.recognizer.phrase_threshold = 0.1
+        self.recognizer.operation_timeout = None
 
-        logger.info("🎙️  Calibrating microphone for ambient noise…")
-        for attempt in range(3):
-            try:
-                mic = _quiet_mic()
-                try:
-                    self.recognizer.adjust_for_ambient_noise(mic, duration=2.0)
-                finally:
-                    mic.__exit__(None, None, None)
-                break
-            except Exception as exc:
-                logger.warning(f"⚠️  Mic open attempt {attempt+1}/3 failed: {exc}")
-                time.sleep(1.0)
-        else:
-            raise RuntimeError("Could not open microphone after 3 attempts")
-
-        # Lower the threshold so soft speech isn't rejected
-        self.recognizer.energy_threshold = max(
-            50, self.recognizer.energy_threshold * 0.65
-        )
+        self._mic_device = self._find_mic_index()
         logger.info(
-            f"✓ Microphone ready  (energy threshold: {self.recognizer.energy_threshold:.0f})"
+            f"✓ Microphone ready  "
+            f"(device={self._mic_device}, energy_threshold={self.recognizer.energy_threshold})"
         )
 
     # ------------------------------------------------------------------ #
-    #  Internal helpers                                                    #
+    #  Mic discovery                                                       #
     # ------------------------------------------------------------------ #
 
-    def _listen_once(
-        self,
-        listen_timeout: int = 5,
-        phrase_time_limit: int = 8,
-    ) -> Optional[str]:
+    @staticmethod
+    def _find_mic_index() -> Optional[int]:
+        """Return device index by NAME only — no test-open.
+
+        Test-opening flushes the PipeWire device list so the returned index
+        is out-of-range by the time the caller actually opens it.
         """
-        Record one phrase from the microphone and return its text.
-
-        Returns None on silence, noise, self-speech, or API errors — never raises.
-        """
-        # Don't listen while Jarvis is speaking — we'd just pick up its own voice
-        if self._speaker and self._speaker.is_speaking:
-            return None
-        # Extra guard: wait a moment after speaking stops so echoes die out
-        if self._speaker:
-            time.sleep(0.3)
-
-        try:
-            mic = _quiet_mic()
-            try:
-                logger.debug("🎤 Listening…")
-                audio = self.recognizer.listen(
-                    mic,
-                    timeout=listen_timeout,
-                    phrase_time_limit=phrase_time_limit,
-                )
-            finally:
-                mic.__exit__(None, None, None)
-
-            text = self.recognizer.recognize_google(
-                audio, language="en-IN"
-            ).strip().lower()
-            logger.info(f"🗣️  Heard: '{text}'")
-            return text
-
-        except sr.WaitTimeoutError:
-            logger.debug("⏱️  Timeout — no speech detected")
-            return None
-        except sr.UnknownValueError:
-            logger.debug("🔇 Could not understand audio")
-            return None
-        except sr.RequestError as exc:
-            logger.error(f"❌ Google Speech API error: {exc}")
-            return None
-        except Exception as exc:
-            logger.error(f"❌ Unexpected listener error: {exc}")
-            return None
+        names = sr.Microphone.list_microphone_names()
+        for priority in ("pipewire", "sysdefault"):
+            for idx, name in enumerate(names):
+                if priority in name.lower():
+                    logger.info(f"🎙️  Selected mic [{idx}] '{name}'")
+                    return idx
+        if names:
+            logger.info(f"🎙️  Fallback mic [0] '{names[0]}'")
+            return 0
+        return None
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
 
     def listen_for_wake_word(self) -> bool:
-        """
-        Loop indefinitely, sampling short audio chunks, until the wake word
-        (settings.WAKE_WORD) is heard.  Returns True when detected.
-        """
+        """Block until the wake word is spoken. Uses listen() for phrase-aware capture."""
         wake_word = settings.WAKE_WORD.lower()
-        logger.info(f"👂 Waiting for wake word: '{wake_word}' …")
+        wake_word_norm = wake_word.replace(" ", "")
+        # Re-discover mic index fresh — device list can shift between runs
+        mic_idx = self._find_mic_index()
+        logger.info(f"👂 Waiting for wake word: '{wake_word}' …  (mic device={mic_idx})")
 
-        while True:
-            text = self._listen_once(listen_timeout=5, phrase_time_limit=3)
-            if text and wake_word in text:
-                logger.info(f"🔔 Wake word detected in: '{text}'")
-                return True
+        try:
+            with sr.Microphone(device_index=mic_idx, sample_rate=16000) as source:
+                while True:
+                    if self._speaker and self._speaker.is_speaking:
+                        time.sleep(0.1)
+                        continue
+
+                    try:
+                        # timeout=20: wait up to 20s for speech to START, then record the phrase
+                        audio = self.recognizer.listen(
+                            source, timeout=20, phrase_time_limit=5
+                        )
+                        text = self.recognizer.recognize_google(audio).strip().lower()
+                        text_norm = text.replace(" ", "")
+                        logger.info(f"🗣️  Heard: '{text}'")
+                        if wake_word_norm in text_norm:
+                            logger.info("🔔 Wake word detected!")
+                            return True
+                    except sr.WaitTimeoutError:
+                        logger.debug("⏱️  No speech — still listening for wake word")
+                    except sr.UnknownValueError:
+                        logger.debug("🔇 Could not understand audio")
+                    except sr.RequestError as exc:
+                        logger.error(f"❌ Speech API error: {exc}")
+                        time.sleep(1)
+                    except Exception as exc:
+                        logger.warning(f"⚠️  Mic error: {exc} — reopening")
+                        break   # exit inner loop, reopen mic
+
+        except Exception as exc:
+            logger.warning(f"⚠️  Could not open mic device={mic_idx} ({exc}) — trying other devices")
+            # Try every other valid index rather than blindly falling back to None
+            candidates = list(range(len(sr.Microphone.list_microphone_names())))
+            for fallback_idx in candidates:
+                if fallback_idx == mic_idx:
+                    continue
+                try:
+                    with sr.Microphone(device_index=fallback_idx, sample_rate=16000) as source:
+                        logger.info(f"🎙️  Wake-word fallback mic [{fallback_idx}]")
+                        while True:
+                            if self._speaker and self._speaker.is_speaking:
+                                time.sleep(0.1)
+                                continue
+                            try:
+                                audio = self.recognizer.listen(source, timeout=20, phrase_time_limit=5)
+                                text = self.recognizer.recognize_google(audio).strip().lower()
+                                text_norm = text.replace(" ", "")
+                                logger.info(f"🗣️  Heard: '{text}'")
+                                if wake_word_norm in text_norm:
+                                    logger.info("🔔 Wake word detected!")
+                                    return True
+                            except sr.WaitTimeoutError:
+                                logger.debug("⏱️  No speech — still listening")
+                            except sr.UnknownValueError:
+                                logger.debug("🔇 Could not understand audio")
+                            except sr.RequestError as exc2:
+                                logger.error(f"❌ Speech API error: {exc2}")
+                                time.sleep(1)
+                            except Exception as exc2:
+                                logger.warning(f"⚠️  Mic error: {exc2} — next device")
+                                break   # try next candidate
+                        break  # exited inner while — reopen same device (recurse)
+                except Exception:
+                    continue
+            else:
+                logger.error("❌ No usable microphone found")
+                time.sleep(2)
+
+        return self.listen_for_wake_word()   # reopen mic and retry
 
     def listen_command(self) -> Optional[str]:
-        """
-        Listen for a command after activation.
+        """Listen for one command phrase. Returns recognised text or None."""
+        # Wait for Jarvis to finish speaking
+        if self._speaker:
+            while self._speaker.is_speaking:
+                time.sleep(0.05)
+            time.sleep(0.35)   # brief echo cooldown
 
-        Retries up to settings.COMMAND_RETRIES times. Returns the recognised
-        text or None if all attempts fail.
-        """
+        # Re-discover mic index fresh each time
+        mic_idx = self._find_mic_index()
         logger.info("🎤 Listening for your command…")
 
-        for attempt in range(1, settings.COMMAND_RETRIES + 1):
-            text = self._listen_once(
-                listen_timeout=settings.COMMAND_TIMEOUT,
-                phrase_time_limit=settings.PHRASE_LIMIT,
-            )
-            if text:
-                return text
-
-            if attempt < settings.COMMAND_RETRIES:
-                logger.warning(
-                    f"⚠️  Attempt {attempt}/{settings.COMMAND_RETRIES} — "
-                    "no speech detected. Please speak clearly."
-                )
+        try:
+            with sr.Microphone(device_index=mic_idx, sample_rate=16000) as source:
+                for attempt in range(1, settings.COMMAND_RETRIES + 1):
+                    try:
+                        audio = self.recognizer.listen(
+                            source,
+                            timeout=settings.COMMAND_TIMEOUT,
+                            phrase_time_limit=settings.PHRASE_LIMIT,
+                        )
+                        text = self.recognizer.recognize_google(audio).strip()
+                        logger.info(f"🗣️  Command: '{text}'")
+                        return text
+                    except sr.WaitTimeoutError:
+                        logger.warning(
+                            f"⚠️  Attempt {attempt}/{settings.COMMAND_RETRIES} — no speech detected"
+                        )
+                    except sr.UnknownValueError:
+                        logger.warning(
+                            f"⚠️  Attempt {attempt}/{settings.COMMAND_RETRIES} — could not understand"
+                        )
+                    except sr.RequestError as exc:
+                        logger.error(f"❌ Speech API error: {exc}")
+                        return None
+                    except (OSError, AttributeError, Exception) as exc:
+                        logger.warning(f"⚠️  Mic stream error: {exc}")
+                        return None
+        except Exception as exc:
+            logger.warning(f"⚠️  Could not open mic device={mic_idx} ({exc}) — trying other devices")
+            candidates = list(range(len(sr.Microphone.list_microphone_names())))
+            for fallback_idx in candidates:
+                if fallback_idx == mic_idx:
+                    continue
+                try:
+                    with sr.Microphone(device_index=fallback_idx, sample_rate=16000) as source:
+                        logger.info(f"🎙️  Command fallback mic [{fallback_idx}]")
+                        try:
+                            audio = self.recognizer.listen(
+                                source,
+                                timeout=settings.COMMAND_TIMEOUT,
+                                phrase_time_limit=settings.PHRASE_LIMIT,
+                            )
+                            text = self.recognizer.recognize_google(audio).strip()
+                            logger.info(f"🗣️  Command: '{text}'")
+                            return text
+                        except sr.WaitTimeoutError:
+                            logger.warning("⚠️  No speech on fallback mic")
+                        except sr.UnknownValueError:
+                            logger.warning("⚠️  Could not understand on fallback mic")
+                        except Exception:
+                            pass
+                        return None  # got a working mic, but no valid speech
+                except Exception:
+                    continue
+            logger.error("❌ No usable microphone found")
+            return None
 
         logger.warning("⚠️  No command received after all attempts")
         return None
-

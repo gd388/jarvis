@@ -55,8 +55,9 @@ def setup_logger(name: str) -> logging.Logger:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Console handler
-    console_handler = logging.StreamHandler()
+    # Console handler — stdout so logs survive `2>/dev/null` in run.sh
+    import sys
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     

@@ -101,9 +101,9 @@ class VoiceSpeaker:
             else:
                 logger.error("❌ No TTS backend — cannot speak")
         finally:
-            # Keep the lock held so the mic doesn't pick up echoes.
+            # Brief pause so the mic doesn't catch the last syllable echoing.
             import time
-            time.sleep(2.0)
+            time.sleep(0.25)
             self._speaking.clear()
 
     # ------------------------------------------------------------------ #

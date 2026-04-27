@@ -16,12 +16,7 @@ _ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
 _noop_handler = _ERROR_HANDLER_FUNC(lambda *args: None)
 
 def _suppress_alsa_errors() -> None:
-    """Silence ALSA C-level noise via a no-op error handler.
-
-    Only suppresses messages routed through ALSA's error handler (pcm.c,
-    pcm_dmix.c, dlmisc.c).  Jack messages go to stderr directly — those
-    are harmless and can be filtered with `2>/dev/null` if desired.
-    """
+    """Silence ALSA C-level noise via a no-op error handler."""
     try:
         asound = ctypes.cdll.LoadLibrary("libasound.so.2")
         asound.snd_lib_error_set_handler(_noop_handler)

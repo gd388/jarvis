@@ -10,13 +10,13 @@ load_dotenv()
 
 class Settings:
     # API
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_API_KEY:   str = os.getenv("GROQ_API_KEY", "")
 
     # LLM
     MODEL_NAME: str = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 
     # Wake word
-    WAKE_WORD: str = os.getenv("WAKE_WORD", "Rise").lower()
+    WAKE_WORD: str = os.getenv("WAKE_WORD", "wake up").lower()
 
     # Listener
     LISTEN_TIMEOUT: int = int(os.getenv("LISTEN_TIMEOUT", "7"))    # secs to wait for speech

@@ -1,6 +1,7 @@
 """Main assistant logic — state machine orchestrating voice I/O and the LLM."""
 
 import logging
+import re
 
 from voice.listener import VoiceListener
 from voice.speaker import VoiceSpeaker
@@ -13,6 +14,16 @@ logger = setup_logger(__name__)
 
 # Commands that end the active session (return to standby)
 _SESSION_END = {"stop", "exit", "quit", "goodbye", "bye", "sleep", "standby"}
+
+# Pattern that signals the user wants Jarvis to read/summarise the current page
+_READ_PAGE_RE = re.compile(
+    r"(what(?:'s| is| are)?\s+(on|in|shown on)\s+(?:the\s+)?(?:page|screen|browser|tab))"
+    r"|((?:read|summarize|summarise|describe|explain)\s+(?:the\s+)?(?:page|screen|this\s+page|current\s+page))"
+    r"|(what\s+(?:does|do)\s+(?:the\s+)?(?:page|screen)\s+(?:say|show|contain|display))"
+    r"|(can\s+you\s+(?:see|read|check)\s+(?:what(?:'s| is)?\s+on\s+)?(?:the\s+)?(?:page|screen))"
+    r"|(tell\s+me\s+(?:about\s+)?(?:what(?:'s| is)\s+on\s+)?(?:the\s+)?(?:page|screen))",
+    re.I,
+)
 
 # Commands that fully shut down the program
 _SHUTDOWN = {"shutdown", "power off", "terminate"}
@@ -122,19 +133,38 @@ class JarvisAssistant:
                 self.speaker.speak(
                     "Understood. Shutting down all systems. Goodbye, sir."
                 )
+                self.llm.clear_history()
                 return False  # full exit
 
-            # ── End session ──────────────────────────────────────────── #
+            # ── End session ────────────────────────────────────────── #
             if self._is_session_end(command):
                 self.speaker.speak(
                     "Of course. Going to standby. Say 'Rise' whenever you need me."
                 )
+                self.llm.clear_history()
                 return True  # back to standby
 
-            # ── Try a local task first, fall back to LLM ─────────────── #
-            response = try_execute(command)
-            if response is None:
-                response = self._safe_respond(command)
+            # ── Page-read intent: inject live page content into LLM ── #
+            if _READ_PAGE_RE.search(command):
+                from agent.browser import get_page_text
+                page_text = get_page_text()
+                if page_text:
+                    augmented = (
+                        f"The user has a browser page open. "
+                        f"Here is the visible text from that page:\n\n{page_text}\n\n"
+                        f"User's question: {command}"
+                    )
+                    response = self._safe_respond(augmented)
+                else:
+                    response = (
+                        "I don't see an active browser page I can read, sir. "
+                        "Please open a page first."
+                    )
+            else:
+                # ── Try a local task first, fall back to LLM ───────── #
+                response = try_execute(command)
+                if response is None:
+                    response = self._safe_respond(command)
             self.speaker.speak(response)
 
 
